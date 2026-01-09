@@ -11,11 +11,13 @@ import {
   Users,
   LogOut,
   User,
+  Building2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/AuthContext";
+import { useUserProfile } from "@/hooks/useUserProfile";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -34,10 +36,15 @@ const navItems = [
   { title: "AI Ask", path: "/ai-ask", icon: MessageSquare },
 ];
 
+const adminNavItems = [
+  { title: "Organization", path: "/organization", icon: Building2 },
+];
+
 export function AppSidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const location = useLocation();
   const { user, signOut } = useAuth();
+  const { isAdmin } = useUserProfile();
 
   return (
     <aside
@@ -80,6 +87,29 @@ export function AppSidebar() {
             </NavLink>
           );
         })}
+        {isAdmin && (
+          <>
+            <div className="h-px bg-sidebar-border my-2" />
+            {adminNavItems.map((item) => {
+              const isActive = location.pathname === item.path;
+              return (
+                <NavLink
+                  key={item.path}
+                  to={item.path}
+                  className={cn(
+                    "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                    isActive
+                      ? "bg-primary/10 text-primary"
+                      : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  )}
+                >
+                  <item.icon className="w-5 h-5 shrink-0" />
+                  {!collapsed && <span>{item.title}</span>}
+                </NavLink>
+              );
+            })}
+          </>
+        )}
       </nav>
 
       {/* User Profile & Logout */}

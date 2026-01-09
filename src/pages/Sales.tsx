@@ -478,6 +478,82 @@ export default function Sales() {
     }
 
     try {
+      // STEP 1: Update inventory FIRST (before creating sale)
+      // This ensures we don't create orphaned sales if inventory update fails
+      for (const cartItem of cart) {
+        if (cartItem.inventoryItemId) {
+          // First, fetch current stock to verify availability
+          const { data: currentInvItem, error: fetchError } = await supabase
+            .from("inventory_items")
+            .select("on_hand")
+            .eq("id", cartItem.inventoryItemId)
+            .single();
+
+          if (fetchError) {
+            console.error("Error fetching inventory:", fetchError);
+            toast.error(`Failed to check inventory for ${cartItem.name}`);
+            setIsCompletingSale(false);
+            return;
+          }
+
+          const currentStock = currentInvItem?.on_hand ?? 0;
+          if (currentStock < cartItem.quantity) {
+            toast.error(`Insufficient stock for ${cartItem.name}. Available: ${currentStock}, Required: ${cartItem.quantity}`);
+            setIsCompletingSale(false);
+            return;
+          }
+
+          // Update inventory atomically with a WHERE clause to prevent race conditions
+          const newStock = currentStock - cartItem.quantity;
+          const { data: updatedItems, error: invError } = await supabase
+            .from("inventory_items")
+            .update({ on_hand: newStock })
+            .eq("id", cartItem.inventoryItemId)
+            .eq("on_hand", currentStock) // Optimistic locking: only update if stock hasn't changed
+            .select();
+
+          if (invError) {
+            console.error("Error updating inventory:", invError);
+            toast.error(`Failed to update inventory for ${cartItem.name}`);
+            setIsCompletingSale(false);
+            return;
+          }
+
+          // Check if update actually succeeded (optimistic lock passed)
+          if (!updatedItems || updatedItems.length === 0) {
+            // Stock changed between fetch and update - fetch fresh stock and retry once
+            const { data: freshInvItem } = await supabase
+              .from("inventory_items")
+              .select("on_hand")
+              .eq("id", cartItem.inventoryItemId)
+              .single();
+
+            const freshStock = freshInvItem?.on_hand ?? 0;
+            if (freshStock < cartItem.quantity) {
+              toast.error(`Insufficient stock for ${cartItem.name}. Available: ${freshStock}, Required: ${cartItem.quantity}. Stock was updated by another transaction.`);
+              setIsCompletingSale(false);
+              return;
+            }
+
+            // Retry the update with fresh stock
+            const retryNewStock = freshStock - cartItem.quantity;
+            const { data: retryUpdatedItems, error: retryError } = await supabase
+              .from("inventory_items")
+              .update({ on_hand: retryNewStock })
+              .eq("id", cartItem.inventoryItemId)
+              .eq("on_hand", freshStock)
+              .select();
+
+            if (retryError || !retryUpdatedItems || retryUpdatedItems.length === 0) {
+              toast.error(`Failed to update inventory for ${cartItem.name}. Stock may have changed again. Please try again.`);
+              setIsCompletingSale(false);
+              return;
+            }
+          }
+        }
+      }
+
+      // STEP 2: Only create sale if all inventory updates succeeded
       // Create sale record
       const { data: sale, error: saleError } = await supabase
         .from("sales")
@@ -493,12 +569,12 @@ export default function Sales() {
 
       if (saleError) {
         console.error("Error creating sale:", saleError);
-        toast.error("Failed to create sale");
+        toast.error("Failed to create sale. Inventory was already updated - please contact support.");
         setIsCompletingSale(false);
         return;
       }
 
-      // Create sale line items and update inventory
+      // STEP 3: Create sale line items and inventory movements
       for (const cartItem of cart) {
         const lineTotal = cartItem.price * cartItem.quantity;
 
@@ -518,28 +594,6 @@ export default function Sales() {
           toast.error("Failed to create sale line items");
           setIsCompletingSale(false);
           return;
-        }
-
-        // Update inventory
-        if (cartItem.inventoryItemId) {
-          const newStock = cartItem.stock - cartItem.quantity;
-          if (newStock < 0) {
-            toast.error(`Cannot complete sale: ${cartItem.name} would go below 0`);
-            setIsCompletingSale(false);
-            return;
-          }
-
-          const { error: invError } = await supabase
-            .from("inventory_items")
-            .update({ on_hand: newStock })
-            .eq("id", cartItem.inventoryItemId);
-
-          if (invError) {
-            console.error("Error updating inventory:", invError);
-            toast.error("Failed to update inventory");
-            setIsCompletingSale(false);
-            return;
-          }
         }
 
         // Create inventory movement record
